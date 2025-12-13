@@ -1,4 +1,5 @@
 import io
+import os
 from typing import Optional, Tuple
 
 import cv2
@@ -10,15 +11,15 @@ from pptx.util import Inches
 
 def extract_slides_from_url(
     video_url: str,
-    skip_seconds: float = 2.0,
-    mse_threshold: float = 2000.0,
+    skip_seconds: float = 2.5,
+    mse_threshold: float = 2500.0,
     max_frames: int = 15000,
 ) -> Tuple[Optional[io.BytesIO], Optional[str]]:
     """
-    Stream a YouTube video (no full download) and extract distinct slide images.
+    Extract distinct slide images from a YouTube video or local video file.
 
     Args:
-        video_url: YouTube video URL or short link.
+        video_url: YouTube video URL or local file path.
         skip_seconds: Seconds to skip between sampled frames.
         mse_threshold: Mean-squared-error threshold to consider a frame a new slide.
         max_frames: Safety limit on number of frames processed.
@@ -27,62 +28,71 @@ def extract_slides_from_url(
         Tuple of (BytesIO with PPTX data or None, error message or None).
     """
 
-    # 1. Resolve a direct stream URL (yt_dlp will not download media when download=False)
-    ydl_opts = {
-        "format": "bestvideo+bestaudio/best",
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-    }
+    # Check if input is a local file
+    is_local_file = os.path.exists(video_url)
+    
+    if is_local_file:
+        # Open local video directly with OpenCV
+        stream_url = video_url
+        duration = None  # We'll get this from cv2 later
+    else:
+        # YouTube URL - resolve stream URL via yt_dlp
+        ydl_opts = {
+            "format": "bestvideo+bestaudio/best",
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+        }
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=False)
-            # yt_dlp may return a dict or a list for formats; prefer the 'url' top-level if present
-            stream_url = info.get("url")
-            duration = info.get("duration")
-            formats = info.get("formats") or []
-    except Exception as e:
-        return None, f"Error getting video stream: {str(e)}"
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_url, download=False)
+                # yt_dlp may return a dict or a list for formats; prefer the 'url' top-level if present
+                stream_url = info.get("url")
+                duration = info.get("duration")
+                formats = info.get("formats") or []
+        except Exception as e:
+            return None, f"Error getting video stream: {str(e)}"
 
-    # If no top-level url was provided, pick a suitable format from `formats`
-    if not stream_url:
-        # Prefer mp4/http formats with both audio and video if available
-        candidates = []
-        for f in formats:
-            if not f.get("url"):
-                continue
-            # prefer video formats (vcodec != 'none')
-            if f.get("vcodec") == "none":
-                continue
-            candidates.append(f)
-
-        def score_format(fdict):
-            # Score by (is_mp4, has_audio, height, tbr)
-            is_mp4 = 1 if fdict.get("ext") == "mp4" else 0
-            has_audio = 0 if fdict.get("acodec") == "none" else 1
-            height = fdict.get("height") or 0
-            tbr = fdict.get("tbr") or 0
-            return (is_mp4, has_audio, height, tbr)
-
-        if candidates:
-            candidates.sort(key=score_format, reverse=True)
-            stream_url = candidates[0].get("url")
-        else:
-            # no suitable format found
-            available = []
+        # If no top-level url was provided, pick a suitable format from `formats`
+        if not stream_url:
+            # Prefer mp4/http formats with both audio and video if available
+            candidates = []
             for f in formats:
-                available.append({
-                    "ext": f.get("ext"),
-                    "protocol": f.get("protocol"),
-                    "vcodec": f.get("vcodec"),
-                    "acodec": f.get("acodec"),
-                })
-            return None, (
-                "Could not resolve a playable stream URL from YouTube. "
-                "No suitable progressive/video formats were found. Available formats: "
-                f"{available}.\nConsider enabling an ffmpeg-based fallback if m3u8/HLS formats are returned."
-            )
+                if not f.get("url"):
+                    continue
+                # prefer video formats (vcodec != 'none')
+                if f.get("vcodec") == "none":
+                    continue
+                candidates.append(f)
+
+            def score_format(fdict):
+                # Score by (is_mp4, has_audio, height, tbr)
+                is_mp4 = 1 if fdict.get("ext") == "mp4" else 0
+                has_audio = 0 if fdict.get("acodec") == "none" else 1
+                height = fdict.get("height") or 0
+                tbr = fdict.get("tbr") or 0
+                return (is_mp4, has_audio, height, tbr)
+
+            if candidates:
+                candidates.sort(key=score_format, reverse=True)
+                stream_url = candidates[0].get("url")
+            
+            if not stream_url:
+                # no suitable format found - return error
+                available = []
+                for f in formats:
+                    available.append({
+                        "ext": f.get("ext"),
+                        "protocol": f.get("protocol"),
+                        "vcodec": f.get("vcodec"),
+                        "acodec": f.get("acodec"),
+                    })
+                return None, (
+                    "Could not resolve a playable stream URL from YouTube. "
+                    "No suitable progressive/video formats were found. Available formats: "
+                    f"{available}.\nConsider enabling an ffmpeg-based fallback if m3u8/HLS formats are returned."
+                )
 
     # 2. Initialize OpenCV capture from stream URL
     def try_open(url):
