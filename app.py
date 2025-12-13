@@ -7,9 +7,14 @@ import requests
 from urllib.parse import urlparse, parse_qs
 import json
 
+# --- NEW IMPORTS ---
+from whisper_utils import transcribe_with_whisper
+from slide_utils import extract_slides_from_url
+
 # Load API key
 load_dotenv()
 genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
+
 
 # ---------------- Helper Functions ----------------
 
@@ -37,7 +42,9 @@ def extract_transcript_details(url):
         response = requests.get(subtitle_url)
         if response.status_code == 200:
             return response.text
-    return "Couldn't find transcript"
+    st.info("⚠️ No official subtitles found. Using Whisper AI to generate them...")
+    st.caption("⏳ This downloads the audio and processes it. Please wait...")
+    return transcribe_with_whisper(url)
 
 def generate_gemini_content(prompt_text):
     """Generate content using Google Gemini"""
@@ -510,10 +517,28 @@ if youtube_link:
                         if 'quiz_data' in st.session_state:
                             del st.session_state.quiz_data
                         st.rerun()
-    
-    else:
-        st.error("❌ Invalid YouTube link. Please check the URL and try again.")
 
+            st.markdown("---")
+            with st.expander("🖼️ Extract Slides from Video (Beta)"):
+                st.info("This feature scans the video to find unique slides and creates a PowerPoint.")
+
+                # Check if we have the video link from earlier in the code
+                if st.button("📸 Extract Slides & Create PPT", key="extract_slides_btn"):
+                    with st.spinner("Analyzing video stream... (Do not close tab)"):
+                        # Call the function we imported from slide_utils.py
+                        pptx_file, error = extract_slides_from_url(youtube_link)
+
+                        if error:
+                            st.error(error)
+                        else:
+                            st.success("Slides extracted successfully!")
+                            st.download_button(
+                                label="📥 Download Slides (.pptx)",
+                                data=pptx_file,
+                                file_name=f"slides_{video_id}.pptx",
+                                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                key="dl_slides_btn"
+                            )
 # Add complete sidebar help
 with st.sidebar:
     st.markdown("### 🎯 All Features")

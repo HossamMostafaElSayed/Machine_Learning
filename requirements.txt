@@ -1,5 +1,24 @@
+# Note: ffmpeg/ffprobe are required on the system (install separately)
+# You can install FFmpeg on Windows using winget/choco or download from https://www.gyan.dev/ffmpeg/builds/
+
 streamlit
 python-dotenv
 google-generativeai
 yt-dlp
 requests
+python-pptx
+faster-whisper
+opencv-python
+numpy
+Pillow
+imageio-ffmpeg
+
+# ONNX Runtime for GPU acceleration (lightweight, ~200MB instead of 2.4GB PyTorch)
+# For NVIDIA GPU: onnxruntime-gpu (requires CUDA 11.8+ and cuDNN)
+# For CPU only: onnxruntime
+
+onnxruntime-gpu==1.18.0
+
+# Optional: For more control, install CPU version only:
+# onnxruntime==1.18.0
+
