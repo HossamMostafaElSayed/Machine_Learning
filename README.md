@@ -1,6 +1,5 @@
-# 🎬 YouTube Assistant Pro
+# 🎬 AI-Powered Video Summarization and Analysis System
 
-> AI-Powered Video Analysis & Transcription Tool
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://python.org)
 [![Streamlit](https://img.shields.io/badge/Streamlit-Latest-red.svg)](https://streamlit.io)
