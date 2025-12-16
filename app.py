@@ -18,6 +18,7 @@ from utilities import (
 )
 from whisper_utils import transcribe_with_whisper
 from slide_utils import extract_slides_from_url
+from rag_utils import RAGSystem, get_rag_system
 
 # Load API key
 load_dotenv()
@@ -93,10 +94,18 @@ else:
         help="Upload a video or audio file to transcribe"
     )
     if uploaded_file:
-        # Save uploaded file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
-            tmp_file.write(uploaded_file.read())
-            local_video_path = tmp_file.name
+        # Use file name + size as stable key to avoid re-processing
+        file_key = f"{uploaded_file.name}_{uploaded_file.size}"
+        
+        # Only save file if it's a new upload (not cached)
+        if 'uploaded_file_key' not in st.session_state or st.session_state.uploaded_file_key != file_key:
+            # Save uploaded file temporarily
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
+                tmp_file.write(uploaded_file.read())
+                st.session_state.uploaded_file_path = tmp_file.name
+            st.session_state.uploaded_file_key = file_key
+        
+        local_video_path = st.session_state.uploaded_file_path
         video_title = uploaded_file.name
         video_id = "local_video"
 
@@ -114,7 +123,7 @@ if youtube_link or local_video_path:
         st.markdown("### 🎯 Choose Your Action")
         mode = st.radio(
             "",
-            ["📝 Summarize", "❓ Ask Questions", "🎯 Key Points", "🧠 Generate Quiz"],
+            ["📝 Summarize", "🎯 Key Points", "🧠 Generate Quiz", "🤖 RAG Chat"],
             horizontal=True,
             label_visibility="collapsed"
         )
@@ -149,8 +158,11 @@ if youtube_link or local_video_path:
         with col_b:
             st.metric("Speed", "⚡ Fast" if whisper_model == "tiny" else "🎯 Accurate")
 
-    # Create a unique key for caching
-    video_key = youtube_link if youtube_link else local_video_path
+    # Create a unique key for caching - use stable key for local files
+    if youtube_link:
+        video_key = youtube_link
+    else:
+        video_key = st.session_state.get('uploaded_file_key', local_video_path)
 
     # Process transcript extraction
     if 'transcript' not in st.session_state or st.session_state.get('last_video') != video_key or st.session_state.get('whisper_model') != whisper_model or st.session_state.get('prefer_whisper') != prefer_whisper:
@@ -163,6 +175,13 @@ if youtube_link or local_video_path:
             st.session_state.last_video = video_key
             st.session_state.whisper_model = whisper_model
             st.session_state.prefer_whisper = prefer_whisper
+            
+            # Clear all cached content when video changes
+            keys_to_clear = ['brief_summary', 'detailed_notes', 'key_points', 
+                            'insights', 'timeline', 'quiz_data', 'slides_pptx']
+            for key in keys_to_clear:
+                if key in st.session_state:
+                    del st.session_state[key]
 
     # Display transcript and features (after extraction)
     if st.session_state.transcript == "Couldn't find transcript":
@@ -252,59 +271,6 @@ if youtube_link or local_video_path:
                         </html>
                         """
                         components.html(html, height=0)
-        
-        # ========== ASK QUESTIONS SECTION ==========
-        elif "Ask Questions" in mode:
-            st.subheader("Ask Questions About the Video")
-            
-            # Custom question input
-            user_question = st.text_input("Enter your question:", key="user_question_input")
-            
-            if st.button("Get Answer", key="get_answer_btn") and user_question:
-                with st.spinner("Generating answer..."):
-                    qna_prompt = (
-                        "You are a YouTube Q&A assistant. "
-                        "Based on the transcript below, answer the question concisely:\n\n"
-                        f"{transcript_text}\n\nQuestion: {user_question}"
-                    )
-                    answer = generate_gemini_content(qna_prompt)
-                    st.markdown("### Answer")
-                    st.markdown(answer)
-                    
-                    # Store in conversation history
-                    if 'conversation' not in st.session_state:
-                        st.session_state.conversation = []
-                    st.session_state.conversation.append({
-                        'question': user_question,
-                        'answer': answer
-                    })
-            
-            # Quick sample questions
-            st.markdown("*Try these sample questions:*")
-            sample_col1, sample_col2 = st.columns(2)
-            with sample_col1:
-                if st.button("What's the main idea?", use_container_width=True, key="main_idea_btn"):
-                    with st.spinner("Finding answer..."):
-                        prompt = f"What is the main idea of this video?\n\n{transcript_text}"
-                        answer = generate_gemini_content(prompt)
-                        st.markdown("*Main Idea:*")
-                        st.markdown(answer)
-            
-            with sample_col2:
-                if st.button("Key takeaways?", use_container_width=True, key="key_takeaways_btn"):
-                    with st.spinner("Finding answer..."):
-                        prompt = f"What are the key takeaways from this video?\n\n{transcript_text}"
-                        answer = generate_gemini_content(prompt)
-                        st.markdown("*Key Takeaways:*")
-                        st.markdown(answer)
-            
-            # Conversation history
-            if 'conversation' in st.session_state and st.session_state.conversation:
-                with st.expander("💬 Conversation History"):
-                    for i, qa in enumerate(st.session_state.conversation):
-                        st.markdown(f"*Q{i+1}:* {qa['question']}")
-                        st.markdown(f"*A:* {qa['answer']}")
-                        st.divider()
         
         # ========== KEY POINTS SECTION ==========
         elif "Key Points" in mode:
@@ -474,6 +440,63 @@ if youtube_link or local_video_path:
                         del st.session_state.quiz_data
                     st.rerun()
 
+        # ========== RAG CHAT SECTION ==========
+        elif "RAG Chat" in mode:
+            st.subheader("🤖 RAG-Powered Q&A")
+            
+            # GROQ API Key input
+            groq_api_key = os.environ.get("GROQ_API_KEY", "")
+            if not groq_api_key:
+                groq_api_key = st.text_input("🔑 Enter GROQ API Key", type="password",
+                    help="Get your free API key from https://console.groq.com")
+            
+            if groq_api_key:
+                try:
+                    # Get cached RAG system (only created once per API key)
+                    rag_system = get_rag_system(groq_api_key)
+                    
+                    # Index transcript if needed (only once per video)
+                    current_video_key = video_key if video_key else "unknown"
+                    if rag_system.indexed_video_id != current_video_key:
+                        with st.spinner("🔄 Indexing transcript..."):
+                            num_chunks = rag_system.index(transcript_text, current_video_key)
+                        st.toast(f"✅ Created {num_chunks} chunks")
+                    
+                    # Settings
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        search_type = st.selectbox("Search", ["hybrid", "semantic", "bm25"], key="rag_search")
+                    with col2:
+                        # Fixed number of chunks for retrieval
+                        top_k = 3
+                    with col3:
+                        llm_model = st.selectbox("Model", RAGSystem.available_models(), key="rag_model")
+                        rag_system.llm_model = llm_model
+                    
+                    # Query input
+                    user_query = st.text_input("🔍 Ask about the video:", key="rag_query")
+                    
+                    if st.button("🚀 Get Answer", key="rag_btn", type="primary"):
+                        if user_query:
+                            with st.spinner("Generating response..."):
+                                response, results = rag_system.query(user_query, top_k, search_type)
+                                st.markdown("### 💡 Answer")
+                                st.markdown(response)
+                                
+                                # Show retrieved chunks
+                                with st.expander("📚 Retrieved Context"):
+                                    for i, (cid, text, score) in enumerate(results):
+                                        st.markdown(f"**Chunk {i+1}** (score: {score:.3f})")
+                                        st.caption(text)
+                                        st.divider()
+                        else:
+                            st.warning("Please enter a question")
+                
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+            else:
+                st.info("👆 Enter your GROQ API key to use RAG Chat")
+
 # Enhanced sidebar with better organization
 with st.sidebar:
     st.markdown("# 🎯 Feature Guide")
@@ -484,14 +507,6 @@ with st.sidebar:
         st.markdown("""
         - 📄 **Brief Summary** (200 words)
         - 📋 **Detailed Notes** (structured sections)        - 🖼️ **Extract Slides** (PPT generation)        -  Download all as text files
-        """)
-    
-    with st.expander("❓ Ask Questions", expanded=False):
-        st.markdown("""
-        - 💬 **Custom Q&A** with AI
-        - ⚡ **Quick Questions** (presets)
-        - 📜 **Conversation History** tracking
-        - 🎯 Context-aware responses
         """)
     
     with st.expander("🎯 Key Points", expanded=False):
@@ -511,6 +526,16 @@ with st.sidebar:
         - 📊 Export as JSON/Text
         """)
     
+    with st.expander("🤖 RAG Chat", expanded=False):
+        st.markdown("""
+        - 🔍 **Semantic Search** (embeddings)
+        - 📝 **BM25 Search** (keywords)
+        - 🔀 **Hybrid Search** (best of both)
+        - 🧠 **GROQ LLM** (fast inference)
+        - 💡 Multiple response styles
+        - 📚 Context-aware answers
+        """)
+    
     st.markdown("---")
     
     # Stats section
@@ -528,10 +553,13 @@ with st.sidebar:
     # Action buttons
     if st.button("🧹 Clear Cache", key="clear_cache_btn", use_container_width=True, type="primary"):
         keys_to_clear = ['brief_summary', 'detailed_notes', 'key_points', 
-                        'insights', 'timeline', 'conversation', 'quiz_data', 'slides_pptx']
+                        'insights', 'timeline', 'conversation', 'quiz_data', 'slides_pptx',
+                        'transcript', 'last_video', 'uploaded_file_key', 'uploaded_file_path']
         for key in keys_to_clear:
             if key in st.session_state:
                 del st.session_state[key]
+        # Also clear cached resources
+        st.cache_resource.clear()
         st.success("✅ Cache cleared!")
         st.rerun()
     
@@ -545,4 +573,4 @@ with st.sidebar:
     """)
     
     st.markdown("---")
-    st.caption("Built with ❤️ using Streamlit & OpenAI Whisper & Gemini API & OpenCVs")
+    st.caption("Built with ❤️ using Streamlit & OpenAI Whisper & Gemini API & GROQ & ChromaDB")

@@ -97,18 +97,33 @@ def generate_structured_quiz(transcript_text, num_questions=5, question_type="Mu
         quiz_json_str = generate_gemini_content(quiz_prompt)
         
         # Clean the response - extract JSON if there's extra text
-        start_idx = quiz_json_str.find('{')
-        end_idx = quiz_json_str.rfind('}') + 1
-        if start_idx != -1 and end_idx != 0:
-            quiz_json_str = quiz_json_str[start_idx:end_idx]
+        # Try multiple JSON extraction patterns
+        json_str = None
+        
+        # Pattern 1: Look for ```json code blocks
+        if '```json' in quiz_json_str:
+            start = quiz_json_str.find('```json') + 7
+            end = quiz_json_str.find('```', start)
+            if end != -1:
+                json_str = quiz_json_str[start:end].strip()
+        
+        # Pattern 2: Look for standard { } blocks
+        if not json_str:
+            start_idx = quiz_json_str.find('{')
+            end_idx = quiz_json_str.rfind('}') + 1
+            if start_idx != -1 and end_idx != 0:
+                json_str = quiz_json_str[start_idx:end_idx]
         
         # Parse the JSON
-        quiz_data = json.loads(quiz_json_str)
-        return quiz_data
+        if json_str:
+            quiz_data = json.loads(json_str)
+            return quiz_data
+        else:
+            raise json.JSONDecodeError("No JSON found", quiz_json_str, 0)
         
-    except json.JSONDecodeError as e:
+    except (json.JSONDecodeError, ValueError) as e:
         # Fallback: generate text quiz and parse it
-        st.warning("Could not parse JSON. Using fallback method...")
+        st.warning(f"⚠️ Could not parse JSON response. Using fallback method...")
         return generate_fallback_quiz(transcript_text, num_questions, question_type, difficulty)
 
 
